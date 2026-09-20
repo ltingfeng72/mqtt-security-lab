@@ -1,12 +1,17 @@
 import logging
+import os
 
 import paho.mqtt.client as mqtt
+from dotenv import load_dotenv
 
 
-HOST = "127.0.0.1"
-PORT = 1883
-TOPIC = "test/topic"
-MESSAGE = "hello mqtt from python"
+load_dotenv()
+
+HOST = os.getenv("MQTT_HOST", "127.0.0.1")
+PORT = int(os.getenv("MQTT_PORT", "1883"))
+TOPIC = os.getenv("MQTT_TOPIC", "test/topic")
+MESSAGE = os.getenv("MQTT_MESSAGE", "hello mqtt from python")
+CLIENT_ID = os.getenv("MQTT_CLIENT_ID", "mqtt-python-client")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,7 +73,11 @@ def on_disconnect(client, userdata, disconnect_flags, reason_code, properties):
 def main():
     """连接本机 Mosquitto，并运行客户端直到收到测试消息。"""
     # 使用 MQTT 5.0 和 paho-mqtt 2.x 的回调接口。
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv5)
+    client = mqtt.Client(
+        mqtt.CallbackAPIVersion.VERSION2,
+        client_id=CLIENT_ID,
+        protocol=mqtt.MQTTv5,
+    )
     client.on_connect = on_connect
     client.on_subscribe = on_subscribe
     client.on_message = on_message
