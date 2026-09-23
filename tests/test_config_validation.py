@@ -9,6 +9,8 @@ BASE_CONFIG = {
     "MQTT_TOPIC": "test/topic",
     "MQTT_MESSAGE": "hello mqtt from python",
     "MQTT_CLIENT_ID": "mqtt-python-client",
+    "MQTT_USERNAME": "mqtt-client",
+    "MQTT_PASSWORD": "test-password",
 }
 
 
@@ -24,6 +26,8 @@ BASE_CONFIG = {
         ("MQTT_TOPIC", "test/#", "MQTT_TOPIC 不能包含通配符 + 或 #"),
         ("MQTT_MESSAGE", "   ", "MQTT_MESSAGE 不能为空"),
         ("MQTT_CLIENT_ID", "   ", "MQTT_CLIENT_ID 不能为空"),
+        ("MQTT_USERNAME", "   ", "MQTT_USERNAME 不能为空"),
+        ("MQTT_PASSWORD", "   ", "MQTT_PASSWORD 不能为空"),
     ],
 )
 def test_validate_config_rejects_invalid_values(field, value, expected_message):
@@ -58,5 +62,6 @@ def test_validate_config_returns_new_dict_without_changing_input():
     assert isinstance(validated_config, dict)
     assert validated_config == expected_config
     assert type(validated_config["MQTT_PORT"]) is int
+    assert validated_config["MQTT_PASSWORD"] == original_config["MQTT_PASSWORD"]
     assert validated_config is not config
     assert config == original_config

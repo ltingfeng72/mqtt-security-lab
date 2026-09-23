@@ -1,0 +1,2 @@
+user mqtt-client
+topic readwrite test/topic
