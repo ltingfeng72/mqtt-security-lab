@@ -21,6 +21,8 @@ def read_config():
         "MQTT_TOPIC": os.getenv("MQTT_TOPIC", "test/topic"),
         "MQTT_MESSAGE": os.getenv("MQTT_MESSAGE", "hello mqtt from python"),
         "MQTT_CLIENT_ID": os.getenv("MQTT_CLIENT_ID", "mqtt-python-client"),
+        "MQTT_USERNAME": os.getenv("MQTT_USERNAME", ""),
+        "MQTT_PASSWORD": os.getenv("MQTT_PASSWORD", ""),
     }
 
 
@@ -49,6 +51,12 @@ def validate_config(config):
     if not config["MQTT_CLIENT_ID"].strip():
         raise ValueError("MQTT_CLIENT_ID 不能为空")
 
+    if not config["MQTT_USERNAME"].strip():
+        raise ValueError("MQTT_USERNAME 不能为空")
+
+    if not config["MQTT_PASSWORD"].strip():
+        raise ValueError("MQTT_PASSWORD 不能为空")
+
     validated_config = config.copy()
     validated_config["MQTT_PORT"] = port
     return validated_config
@@ -58,6 +66,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
     """连接成功后订阅测试主题。"""
     if reason_code.is_failure:
         logger.error("连接 MQTT Broker 失败：%s", reason_code)
+        userdata["exit_code"] = 3
         client.disconnect()
         return
 
@@ -65,6 +74,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
     result, _ = client.subscribe(userdata["MQTT_TOPIC"])
     if result != mqtt.MQTT_ERR_SUCCESS:
         logger.error("订阅失败，错误码：%s", result)
+        userdata["exit_code"] = 3
         client.disconnect()
 
 
@@ -72,6 +82,7 @@ def on_subscribe(client, userdata, mid, reason_code_list, properties):
     """订阅确认后发布测试消息。"""
     if any(reason_code.is_failure for reason_code in reason_code_list):
         logger.error("订阅失败：%s", reason_code_list)
+        userdata["exit_code"] = 3
         client.disconnect()
         return
 
@@ -80,11 +91,20 @@ def on_subscribe(client, userdata, mid, reason_code_list, properties):
     logger.info("订阅成功：%s", topic)
 
     # 订阅成功后，向同一主题发布测试消息。
-    message_info = client.publish(topic, message)
+    message_info = client.publish(topic, message, qos=1)
     if message_info.rc == mqtt.MQTT_ERR_SUCCESS:
         logger.info("消息发布：%s", message)
     else:
         logger.error("消息发布失败，错误码：%s", message_info.rc)
+        userdata["exit_code"] = 3
+        client.disconnect()
+
+
+def on_publish(client, userdata, mid, reason_code, properties):
+    """检查 QoS 1 发布的 PUBACK 结果。"""
+    if reason_code.is_failure:
+        logger.error("发布被 MQTT Broker 拒绝：%s", reason_code)
+        userdata["exit_code"] = 3
         client.disconnect()
 
 
@@ -98,6 +118,7 @@ def on_message(client, userdata, message):
         message.topic == userdata["MQTT_TOPIC"]
         and payload == userdata["MQTT_MESSAGE"]
     ):
+        userdata["exit_code"] = 0
         client.disconnect()
 
 
@@ -107,6 +128,8 @@ def on_disconnect(client, userdata, disconnect_flags, reason_code, properties):
         logger.info("已正常断开 MQTT Broker 连接")
     else:
         logger.warning("MQTT 连接意外断开：%s", reason_code)
+        if userdata["exit_code"] != 0:
+            userdata["exit_code"] = 3
 
 
 def main():
@@ -117,15 +140,26 @@ def main():
         logger.error("配置错误：%s", error)
         return 2
 
+    runtime_state = {
+        "MQTT_TOPIC": config["MQTT_TOPIC"],
+        "MQTT_MESSAGE": config["MQTT_MESSAGE"],
+        "exit_code": 3,
+    }
+
     # 使用 MQTT 5.0 和 paho-mqtt 2.x 的回调接口。
     client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION2,
         client_id=config["MQTT_CLIENT_ID"],
-        userdata=config,
+        userdata=runtime_state,
         protocol=mqtt.MQTTv5,
+    )
+    client.username_pw_set(
+        config["MQTT_USERNAME"],
+        config["MQTT_PASSWORD"],
     )
     client.on_connect = on_connect
     client.on_subscribe = on_subscribe
+    client.on_publish = on_publish
     client.on_message = on_message
     client.on_disconnect = on_disconnect
 
@@ -139,13 +173,15 @@ def main():
         client.loop_forever()
     except (OSError, mqtt.MQTTException) as error:
         logger.error("连接或通信失败：%s", error)
+        runtime_state["exit_code"] = 3
     except Exception:
         logger.exception("程序运行过程中出现异常")
+        runtime_state["exit_code"] = 3
     finally:
         if client.is_connected():
             client.disconnect()
 
-    return 0
+    return runtime_state["exit_code"]
 
 
 if __name__ == "__main__":
