@@ -8,6 +8,7 @@ __pycache__/
 lab/logs/
 lab/data/
 /lab/config/passwords
+/lab/tls/generated/
 
 .env
 .env.*
