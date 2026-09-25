@@ -1,5 +1,6 @@
 import logging
 import os
+from pathlib import Path
 
 import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
@@ -11,13 +12,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def resolve_project_path(path_value):
+    path = Path(path_value)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path.resolve()
+
 
 def read_config():
     """从环境变量读取 MQTT 配置。"""
     load_dotenv()
     return {
         "MQTT_HOST": os.getenv("MQTT_HOST", "127.0.0.1"),
-        "MQTT_PORT": os.getenv("MQTT_PORT", "1883"),
+        "MQTT_PORT": os.getenv("MQTT_PORT", "8883"),
+        "MQTT_CA_FILE": os.getenv(
+            "MQTT_CA_FILE",
+            "lab/tls/generated/ca.crt",
+        ),
         "MQTT_TOPIC": os.getenv("MQTT_TOPIC", "test/topic"),
         "MQTT_MESSAGE": os.getenv("MQTT_MESSAGE", "hello mqtt from python"),
         "MQTT_CLIENT_ID": os.getenv("MQTT_CLIENT_ID", "mqtt-python-client"),
@@ -57,8 +71,19 @@ def validate_config(config):
     if not config["MQTT_PASSWORD"].strip():
         raise ValueError("MQTT_PASSWORD 不能为空")
 
+    ca_file = config["MQTT_CA_FILE"]
+    if not ca_file.strip():
+        raise ValueError("MQTT_CA_FILE cannot be empty")
+
+    ca_file_path = resolve_project_path(ca_file)
+    if not ca_file_path.exists():
+        raise ValueError("MQTT_CA_FILE does not exist")
+    if not ca_file_path.is_file():
+        raise ValueError("MQTT_CA_FILE must point to a regular file")
+
     validated_config = config.copy()
     validated_config["MQTT_PORT"] = port
+    validated_config["MQTT_CA_FILE"] = str(ca_file_path)
     return validated_config
 
 
@@ -157,13 +182,14 @@ def main():
         config["MQTT_USERNAME"],
         config["MQTT_PASSWORD"],
     )
-    client.on_connect = on_connect
-    client.on_subscribe = on_subscribe
-    client.on_publish = on_publish
-    client.on_message = on_message
-    client.on_disconnect = on_disconnect
-
     try:
+        client.tls_set(ca_certs=config["MQTT_CA_FILE"])
+        client.on_connect = on_connect
+        client.on_subscribe = on_subscribe
+        client.on_publish = on_publish
+        client.on_message = on_message
+        client.on_disconnect = on_disconnect
+
         logger.info(
             "正在连接 MQTT Broker：%s:%s",
             config["MQTT_HOST"],
@@ -171,11 +197,8 @@ def main():
         )
         client.connect(config["MQTT_HOST"], config["MQTT_PORT"])
         client.loop_forever()
-    except (OSError, mqtt.MQTTException) as error:
+    except OSError as error:
         logger.error("连接或通信失败：%s", error)
-        runtime_state["exit_code"] = 3
-    except Exception:
-        logger.exception("程序运行过程中出现异常")
         runtime_state["exit_code"] = 3
     finally:
         if client.is_connected():

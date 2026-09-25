@@ -1,6 +1,9 @@
 import os
+import socket
+import ssl
 import threading
 import uuid
+from pathlib import Path
 
 import paho.mqtt.client as mqtt
 import pytest
@@ -19,9 +22,15 @@ def integration_config():
         "MQTT_INTEGRATION_PORT",
         "MQTT_INTEGRATION_USERNAME",
         "MQTT_INTEGRATION_PASSWORD",
+        "MQTT_INTEGRATION_CA_FILE",
+        "MQTT_INTEGRATION_UNTRUSTED_CA_FILE",
     )
     values = {name: os.getenv(name) for name in environment_names}
-    missing = [name for name, value in values.items() if not value]
+    missing = [
+        name
+        for name, value in values.items()
+        if value is None or not value.strip()
+    ]
     if missing:
         pytest.fail(
             "Missing required integration environment variables: "
@@ -50,21 +59,44 @@ def integration_config():
             pytrace=False,
         )
 
+    ca_file = Path(values["MQTT_INTEGRATION_CA_FILE"])
+    if not ca_file.is_file() or ca_file.stat().st_size <= 0:
+        pytest.fail(
+            "MQTT_INTEGRATION_CA_FILE must point to a non-empty file",
+            pytrace=False,
+        )
+
+    untrusted_ca_file = Path(
+        values["MQTT_INTEGRATION_UNTRUSTED_CA_FILE"]
+    )
+    if (
+        not untrusted_ca_file.is_file()
+        or untrusted_ca_file.stat().st_size <= 0
+    ):
+        pytest.fail(
+            "MQTT_INTEGRATION_UNTRUSTED_CA_FILE must point to a non-empty file",
+            pytrace=False,
+        )
+
     return {
         "host": values["MQTT_INTEGRATION_HOST"],
         "port": port,
         "username": username,
         "password": values["MQTT_INTEGRATION_PASSWORD"],
+        "ca_file": str(ca_file.resolve()),
+        "untrusted_ca_file": str(untrusted_ca_file.resolve()),
     }
 
 
-def _new_client(username, password):
+def _new_client(username, password, ca_file):
     client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION2,
         client_id=f"mqtt-integration-{uuid.uuid4().hex}",
         protocol=mqtt.MQTTv5,
     )
+    client.connect_timeout = TIMEOUT_SECONDS
     client.username_pw_set(username, password)
+    client.tls_set(ca_certs=ca_file)
     return client
 
 
@@ -160,6 +192,7 @@ def test_valid_credentials_complete_mqtt_flow(integration_config):
     client = _new_client(
         integration_config["username"],
         integration_config["password"],
+        integration_config["ca_file"],
     )
     _install_round_trip_callbacks(
         client,
@@ -194,7 +227,11 @@ def test_wrong_password_is_rejected(integration_config):
 
     connack_received = threading.Event()
     state = {}
-    client = _new_client(integration_config["username"], wrong_password)
+    client = _new_client(
+        integration_config["username"],
+        wrong_password,
+        integration_config["ca_file"],
+    )
 
     def on_connect(active_client, userdata, flags, reason_code, properties):
         state["connect_reason"] = reason_code
@@ -227,6 +264,7 @@ def test_acl_allows_read_write_on_test_topic(integration_config):
     client = _new_client(
         integration_config["username"],
         integration_config["password"],
+        integration_config["ca_file"],
     )
     _install_round_trip_callbacks(
         client,
@@ -261,6 +299,7 @@ def test_acl_denies_publish_to_denied_topic(integration_config):
     client = _new_client(
         integration_config["username"],
         integration_config["password"],
+        integration_config["ca_file"],
     )
 
     def on_connect(active_client, userdata, flags, reason_code, properties):
@@ -312,3 +351,63 @@ def test_acl_denies_publish_to_denied_topic(integration_config):
     finally:
         client.loop_stop()
         client.disconnect()
+
+
+def test_untrusted_ca_rejects_server_certificate(integration_config):
+    client = _new_client(
+        integration_config["username"],
+        integration_config["password"],
+        integration_config["untrusted_ca_file"],
+    )
+
+    try:
+        with pytest.raises(ssl.SSLCertVerificationError) as error:
+            client.connect(
+                integration_config["host"],
+                integration_config["port"],
+            )
+
+        assert "certificate verify failed" in str(error.value).lower()
+    finally:
+        if client.is_connected():
+            client.disconnect()
+
+
+def test_hostname_mismatch_rejects_server_certificate(
+    integration_config,
+    monkeypatch,
+):
+    original_getaddrinfo = socket.getaddrinfo
+
+    def ipv4_only_getaddrinfo(host, port, *args, **kwargs):
+        results = original_getaddrinfo(host, port, *args, **kwargs)
+        if host != "localhost":
+            return results
+
+        ipv4_results = [
+            result for result in results if result[0] == socket.AF_INET
+        ]
+        assert ipv4_results, "localhost did not resolve to an IPv4 address"
+        return ipv4_results
+
+    monkeypatch.setattr(socket, "getaddrinfo", ipv4_only_getaddrinfo)
+    client = _new_client(
+        integration_config["username"],
+        integration_config["password"],
+        integration_config["ca_file"],
+    )
+
+    try:
+        with pytest.raises(ssl.SSLCertVerificationError) as error:
+            client.connect("localhost", integration_config["port"])
+
+        error_message = str(error.value).lower()
+        assert "certificate verify failed" in error_message
+        assert (
+            "hostname mismatch" in error_message
+            or "not valid for" in error_message
+            or "doesn't match" in error_message
+        )
+    finally:
+        if client.is_connected():
+            client.disconnect()

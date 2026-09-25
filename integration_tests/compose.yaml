@@ -2,9 +2,13 @@ services:
   mosquitto:
     image: eclipse-mosquitto:2
     ports:
-      - "127.0.0.1:${MQTT_INTEGRATION_PORT:-18883}:1883"
+      - "127.0.0.1:${MQTT_INTEGRATION_PORT:-18884}:8883"
     volumes:
       - type: bind
         source: ${MQTT_INTEGRATION_CONFIG_DIR}
         target: /mosquitto/config
+        read_only: true
+      - type: bind
+        source: ${MQTT_INTEGRATION_CERT_DIR}
+        target: /mosquitto/certs
         read_only: true
