@@ -6,8 +6,12 @@ services:
     restart: unless-stopped
     ports:
       # Expose MQTT only on the local loopback interface.
-      - "127.0.0.1:1883:1883"
+      - "127.0.0.1:8883:8883"
     volumes:
       - ./lab/config:/mosquitto/config
       - ./lab/data:/mosquitto/data
       - ./lab/logs:/mosquitto/log
+      - type: bind
+        source: ./lab/tls/generated
+        target: /mosquitto/certs
+        read_only: true

@@ -1,3 +1,6 @@
+import ssl
+
+import src.mqtt_client as mqtt_client
 from src.mqtt_client import (
     on_connect,
     on_disconnect,
@@ -216,3 +219,49 @@ def test_on_disconnect_success_does_not_overwrite_completed_success():
     on_disconnect(client, runtime_state, None, 0, None)
 
     assert runtime_state["exit_code"] == 0
+
+
+def test_main_returns_runtime_failure_for_tls_socket_error(monkeypatch):
+    class FakeRuntimeClient:
+        def __init__(self):
+            self.loop_forever_called = False
+
+        def username_pw_set(self, username, password):
+            pass
+
+        def tls_set(self, ca_certs):
+            pass
+
+        def connect(self, host, port):
+            raise ssl.SSLEOFError("simulated TLS EOF")
+
+        def loop_forever(self):
+            self.loop_forever_called = True
+
+        def is_connected(self):
+            return False
+
+        def disconnect(self):
+            pass
+
+    config = {
+        "MQTT_HOST": "127.0.0.1",
+        "MQTT_PORT": 8883,
+        "MQTT_CA_FILE": "unused-ca.crt",
+        "MQTT_TOPIC": "test/topic",
+        "MQTT_MESSAGE": "test message",
+        "MQTT_CLIENT_ID": "mqtt-runtime-test",
+        "MQTT_USERNAME": "test-user",
+        "MQTT_PASSWORD": "test-password",
+    }
+    client = FakeRuntimeClient()
+    monkeypatch.setattr(mqtt_client, "read_config", lambda: {})
+    monkeypatch.setattr(mqtt_client, "validate_config", lambda raw: config)
+    monkeypatch.setattr(
+        mqtt_client.mqtt,
+        "Client",
+        lambda *args, **kwargs: client,
+    )
+
+    assert mqtt_client.main() == 3
+    assert client.loop_forever_called is False
